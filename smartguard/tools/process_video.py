@@ -35,7 +35,7 @@ def main() -> None:
     out = args.out or Path(tempfile.mkdtemp(prefix="smartguard-"))
     out.mkdir(parents=True, exist_ok=True)
     db = Database(out / "smartguard.db")
-    recorder = EventRecorder(db, out / "captures", camera.name)
+    recorder = EventRecorder(db, out / "captures", camera.name, settings.repeat_cooldown_s)
 
     started = time.monotonic()
     pipeline = Pipeline(settings, camera)
@@ -50,6 +50,9 @@ def main() -> None:
         result = pipeline.process(frame)
         for confirmed in result.confirmed:
             access = recorder.record_plate(confirmed)
+            if access is None:
+                print(f"  frame {frames:5}: {confirmed.plate.formatted} descartada (mala lectura reciente)")
+                continue
             print(f"  frame {frames:5}: placa {confirmed.plate.formatted} ({confirmed.plate.province}) "
                   f"conf={confirmed.confidence:.2f} -> {DECISION_LABELS[access.event.decision]}")
         for alert in result.weapon_alerts:

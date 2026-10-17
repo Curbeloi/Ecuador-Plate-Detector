@@ -65,7 +65,7 @@ class CameraWorker(QThread):
         from smartguard.vision.pipeline import Pipeline  # carga torch/onnx fuera del hilo de la interfaz
 
         db = Database(self.db_path)
-        recorder = EventRecorder(db, self.settings.captures_path, self.camera.name)
+        recorder = EventRecorder(db, self.settings.captures_path, self.camera.name, self.settings.repeat_cooldown_s)
         pipeline = None
         try:
             self._set_status("Cargando modelos…")
@@ -97,8 +97,14 @@ class CameraWorker(QThread):
         grabber = FrameGrabber(video)
         grabber.start()
         seq, frames, window_start = 0, 0, time.monotonic()
+        interval = 1 / max(self.camera.max_fps, 1)
+        next_due = time.monotonic()
         try:
             while not self._stop_event.is_set():
+                # El grabber guarda solo el último cuadro, así que esperar no acumula retraso.
+                if self._stop_event.wait(max(0.0, next_due - time.monotonic())):
+                    break
+                next_due = max(next_due + interval, time.monotonic())
                 self._apply_pending(pipeline)
                 seq, frame = grabber.next_frame(seq)
                 if frame is None:
@@ -135,7 +141,8 @@ class CameraWorker(QThread):
             for alert in result.weapon_alerts:
                 self.weaponAlert.emit(self.camera.id, recorder.record_weapon(alert))
             for confirmed in result.confirmed:
-                self.accessEvent.emit(self.camera.id, recorder.record_plate(confirmed))
+                if access := recorder.record_plate(confirmed):
+                    self.accessEvent.emit(self.camera.id, access)
             for event in result.count_events:
                 recorder.record_count(event)
             for shot in result.shots:

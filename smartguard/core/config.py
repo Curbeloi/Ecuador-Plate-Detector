@@ -38,12 +38,15 @@ class Camera:
     counter: dict | None = None
     """``CounterConfig.to_dict()``; ``None`` cuenta todo lo que aparece."""
     loop_video: bool = True
+    max_fps: int = 5
+    """Cuadros por segundo que se analizan. Para contar y detectar armas bastan 5; para leer placas, unos 10.
+    Bajarlo permite atender más cámaras con el mismo equipo."""
     id: str = field(default_factory=_new_id)
 
 
 def _default_cameras() -> list[Camera]:
     source = str(DEMO_VIDEO) if DEMO_VIDEO.exists() else "0"
-    return [Camera(name="Garita (demo)" if DEMO_VIDEO.exists() else "Garita", source=source)]
+    return [Camera(name="Garita (demo)" if DEMO_VIDEO.exists() else "Garita", source=source, max_fps=10)]
 
 
 @dataclass
@@ -59,7 +62,8 @@ class Settings:
     votes_required: int = 3
     repeat_cooldown_s: float = 60.0
     weapon_model: str = "smartguard-armas-v1.pt"
-    weapon_confidence: float = 0.5
+    weapon_confidence: float = 0.3
+    """Calibrado con recortes por persona en video de vigilancia real; con 0,5 se pierden la mitad de las alertas."""
     weapon_votes_required: int = 3
     """Detecciones del mismo tipo de arma en ``WEAPON_WINDOW_S`` para disparar la alerta."""
     weapon_cooldown_s: float = 30.0

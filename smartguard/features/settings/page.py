@@ -91,6 +91,11 @@ class CameraEditor(QWidget):
         self.save_photos = QCheckBox("Guardar una foto de cada vehículo")
         self.detect_weapons = QCheckBox("Detectar armas de fuego y armas blancas")
         self.loop_video = QCheckBox("Repetir el video al terminar (solo archivos)")
+        self.max_fps = QSpinBox()
+        self.max_fps.setRange(1, 30)
+        self.max_fps.setSuffix(" cuadros/s")
+        self.max_fps.setToolTip("5 bastan para contar y detectar armas; la cámara de placas necesita unos 10. "
+                                "Menos cuadros por cámara permiten atender más cámaras con el mismo equipo.")
         self.count_objects.toggled.connect(self.save_photos.setEnabled)
         self.test = QPushButton("Probar conexión")
         self.test.clicked.connect(self._probe)
@@ -108,11 +113,12 @@ class CameraEditor(QWidget):
         form.addRow("", self.save_photos)
         form.addRow("", self.detect_weapons)
         form.addRow("", self.loop_video)
+        form.addRow("Análisis", self.max_fps)
         form.addRow(self.test, self.test_result)
 
         for signal in (self.name.textChanged, self.url.textChanged, self.file.textChanged):
             signal.connect(self._store)
-        for signal in (self.kind.currentIndexChanged, self.index.valueChanged):
+        for signal in (self.kind.currentIndexChanged, self.index.valueChanged, self.max_fps.valueChanged):
             signal.connect(self._store)
         for box in (self.enabled, self.read_plates, self.count_objects, self.save_photos, self.detect_weapons,
                     self.loop_video):
@@ -137,6 +143,7 @@ class CameraEditor(QWidget):
         self.save_photos.setEnabled(camera.count_objects)
         self.detect_weapons.setChecked(camera.detect_weapons)
         self.loop_video.setChecked(camera.loop_video)
+        self.max_fps.setValue(camera.max_fps)
         self.test_result.clear()
         self.camera = camera
 
@@ -155,6 +162,7 @@ class CameraEditor(QWidget):
         c.save_vehicle_photos = self.save_photos.isChecked()
         c.detect_weapons = self.detect_weapons.isChecked()
         c.loop_video = self.loop_video.isChecked()
+        c.max_fps = self.max_fps.value()
         self.changed.emit()
 
     def _browse(self) -> None:

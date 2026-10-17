@@ -1,6 +1,8 @@
 """Convierte los resultados del pipeline en registros: decisión de acceso, evidencia y conteos."""
 
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +11,7 @@ import cv2
 
 from smartguard.core.db import UNKNOWN, Database, PlateEvent, Vehicle, WeaponEvent, now_ts
 from smartguard.vision.counting import CountEvent
-from smartguard.vision.ecuador import Plate
+from smartguard.vision.ecuador import Plate, differs_by_one_char
 from smartguard.vision.pipeline import ConfirmedPlate, WeaponAlert
 from smartguard.vision.snapshots import BestShot
 from smartguard.vision.tracking import VEHICLE_LABELS
@@ -28,10 +30,15 @@ def _slug(text: str) -> str:
 
 
 class EventRecorder:
-    def __init__(self, db: Database, captures_dir: Path, camera_name: str):
+    def __init__(self, db: Database, captures_dir: Path, camera_name: str, repeat_cooldown_s: float = 60.0,
+                 clock: Callable[[], float] = time.monotonic):
         self.db = db
         self.captures_dir = captures_dir
         self.camera_name = camera_name
+        self.repeat_cooldown_s = repeat_cooldown_s
+        self._clock = clock
+        self._recent_plates: dict[str, float] = {}
+        """Placa -> momento en que se registró, para reconocer malas lecturas de la misma placa."""
         self._count_ids: dict[int, int] = {}
         """track_id -> id del conteo, para adjuntarle la foto cuando el vehículo se va."""
 
@@ -40,9 +47,22 @@ class EventRecorder:
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
-    def record_plate(self, confirmed: ConfirmedPlate) -> AccessEvent:
+    def _misread_of_recent(self, text: str) -> bool:
+        now = self._clock()
+        self._recent_plates = {p: at for p, at in self._recent_plates.items() if now - at < self.repeat_cooldown_s}
+        return any(differs_by_one_char(text, recent) for recent in self._recent_plates)
+
+    def record_plate(self, confirmed: ConfirmedPlate) -> AccessEvent | None:
+        """Registra el acceso. Devuelve ``None`` si es una mala lectura de una placa recién registrada.
+
+        Solo se descartan placas *no registradas*: una placa del registro (autorizada o bloqueada)
+        siempre genera evento, aunque se parezca a otra recién vista.
+        """
         plate = confirmed.plate
         vehicle = self.db.find_vehicle(plate.text)
+        if vehicle is None and self._misread_of_recent(plate.text):
+            return None
+        self._recent_plates[plate.text] = self._clock()
         stamp = datetime.now().strftime("%H%M%S")
         folder = self._folder("placas")
         snapshot = folder / f"{stamp}_{plate.text}.jpg"

@@ -14,7 +14,7 @@ from smartguard.vision.plates import PlateRecognizer
 from smartguard.vision.snapshots import BestShot, BestShotKeeper
 from smartguard.vision.tracking import Box, ObjectTracker, Track
 from smartguard.vision.voting import Voter
-from smartguard.vision.weapons import WeaponDetector, near_person
+from smartguard.vision.weapons import WeaponDetector
 
 # Colores BGR
 VEHICLE_COLOR = (255, 170, 60)
@@ -102,7 +102,7 @@ class Pipeline:
             if camera.read_plates
             else None
         )
-        self.voter = Voter(settings.votes_required, cooldown_s=settings.repeat_cooldown_s, merge_near_duplicates=True)
+        self.voter = Voter(settings.votes_required, cooldown_s=settings.repeat_cooldown_s)
         self.shots = BestShotKeeper() if camera.save_vehicle_photos else None
         self.weapons = (
             WeaponDetector(models_dir(), settings.weapon_model, settings.weapon_confidence, self.device)
@@ -111,8 +111,6 @@ class Pipeline:
         )
         self.weapon_voter = Voter(settings.weapon_votes_required, WEAPON_WINDOW_S, settings.weapon_cooldown_s)
         self.counter: ObjectCounter | None = None
-        self._track_plates: dict[int, Plate] = {}
-        """Placa ya confirmada de cada vehículo seguido: evita repetir el OCR en cada frame."""
         self.set_counter(CounterConfig.from_dict(camera.counter) if camera.count_objects else None)
 
     def set_counter(self, config: CounterConfig | None) -> None:
@@ -137,21 +135,21 @@ class Pipeline:
             _label(result.annotated, f"{track.label} #{track.id}", (x1, y1), color)
         if self.plates:
             for box in self.plates.detect(frame):
-                self._handle_plate(frame, box, tracks, result)
+                self._handle_plate(frame, box, result)
         if self.weapons:
             self._handle_weapons(frame, tracks, result)
-        self._forget_lost_tracks(tracks)
         return result
 
     def _handle_weapons(self, frame: np.ndarray, tracks: list[Track], result: FrameResult) -> None:
-        for detection in self.weapons.detect(frame):
-            person = near_person(detection.box, tracks)
-            if person is None:  # arma suelta (cartel, pantalla, objeto del fondo): no alerta
-                continue
+        voted = set()  # un voto por tipo de arma y cuadro, aunque la vean los recortes de dos personas
+        for detection, person in self.weapons.detect_on_people(frame, tracks):
             x1, y1, x2, y2 = detection.box
             cv2.rectangle(result.annotated, (x1, y1), (x2, y2), WEAPON_COLOR, 3)
             _label(result.annotated, f"{WEAPON_TEXT[detection.kind]} {detection.confidence:.0%}", (x1, y1),
                    WEAPON_COLOR)
+            if detection.kind in voted:
+                continue
+            voted.add(detection.kind)
             if self.weapon_voter.add(detection.kind):
                 h, w = frame.shape[:2]
                 px1, py1 = max(min(x1, person.box[0]) - 20, 0), max(min(y1, person.box[1]) - 20, 0)
@@ -160,22 +158,18 @@ class Pipeline:
                     detection.kind, detection.confidence, result.annotated.copy(), frame[py1:py2, px1:px2].copy()
                 ))
 
-    def _handle_plate(self, frame: np.ndarray, box: Box, tracks: list[Track], result: FrameResult) -> None:
-        owner = next((t for t in tracks if t.is_vehicle and t.contains(box)), None)
-        known = self._track_plates.get(owner.id) if owner else None
+    def _handle_plate(self, frame: np.ndarray, box: Box, result: FrameResult) -> None:
+        """Lee cada placa detectada en cada frame. No se reutiliza la placa de un vehículo seguido:
+        si el tracker confunde dos autos, el segundo heredaría la placa (autorizada) del primero."""
         x1, y1, x2, y2 = box
-        if known:
-            text, color = known.formatted, CONFIRMED_COLOR
-        else:
-            read = self.plates.read(frame, box)
-            text, color = (read.plate.formatted if read.plate else "?"), PLATE_COLOR
-            if read.plate and self.voter.add(read.plate.text):
-                result.confirmed.append(
-                    ConfirmedPlate(read.plate, read.raw_text, read.confidence, frame.copy(), frame[y1:y2, x1:x2].copy())
-                )
-                color = CONFIRMED_COLOR
-                if owner:
-                    self._track_plates[owner.id] = read.plate
+        read = self.plates.read(frame, box)
+        text = read.plate.formatted if read.plate else "?"
+        color = CONFIRMED_COLOR if read.plate and self.voter.recently_confirmed(read.plate.text) else PLATE_COLOR
+        if read.plate and self.voter.add(read.plate.text):
+            result.confirmed.append(
+                ConfirmedPlate(read.plate, read.raw_text, read.confidence, frame.copy(), frame[y1:y2, x1:x2].copy())
+            )
+            color = CONFIRMED_COLOR
         cv2.rectangle(result.annotated, (x1, y1), (x2, y2), color, 2)
         _label(result.annotated, text, (x1, y2 + 26), color)
 
@@ -183,7 +177,3 @@ class Pipeline:
         """Fotos pendientes de los vehículos aún a la vista (al detener la cámara)."""
         return self.shots.flush() if self.shots else []
 
-    def _forget_lost_tracks(self, tracks: list[Track]) -> None:
-        if len(self._track_plates) > 512:
-            alive = {t.id for t in tracks}
-            self._track_plates = {k: v for k, v in self._track_plates.items() if k in alive}

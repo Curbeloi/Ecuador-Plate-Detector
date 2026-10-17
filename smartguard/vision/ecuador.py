@@ -119,6 +119,11 @@ def parse_plate(raw: str, max_corrections: int = 2) -> Plate | None:
     return best[1] if best else None
 
 
+def differs_by_one_char(a: str, b: str) -> bool:
+    """``PON7651`` vs ``PDN7651``: típico error del OCR sobre la misma placa."""
+    return len(a) == len(b) and sum(x != y for x, y in zip(a, b, strict=True)) == 1
+
+
 def format_plate(text: str) -> str:
     """Formato legible para cualquier placa guardada, sea o no ecuatoriana."""
     plate = parse_plate(text, max_corrections=0)
